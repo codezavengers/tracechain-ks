@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { Search, Wallet as WalletIcon, Eye, CheckCircle2, XCircle, Info, Coins } from "lucide-react"
+import { Search, Wallet as WalletIcon, Eye, CheckCircle2, XCircle, Info, Coins, GitBranch } from "lucide-react"
 import { SectionHeading, ProvenanceBadge, CopyAddress, StatTile, KindBadge } from "@/components/intel/shared"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -9,11 +9,13 @@ import { Input, Select, Label } from "@/components/ui/field"
 import { Badge } from "@/components/ui/badge"
 import { Spinner, ErrorState, EmptyState } from "@/components/ui/feedback"
 import { TransactionsTable } from "@/components/intel/transactions-table"
+import { FundFlowGraph } from "@/components/intel/fund-flow-graph"
 import { apiPost, useSession } from "@/lib/client/hooks"
 import { PERMISSIONS } from "@/lib/auth"
 import { CHAIN_LABEL, usdOrUnknown, dateTime } from "@/lib/client/format"
 import { shortAddress } from "@/lib/blockchain/address-utils"
 import type { Chain, WalletMetadata, Transaction, AddressValidation, DataProvenance } from "@/lib/types"
+import type { TraceGraph } from "@/lib/engines/fund-tracing"
 
 type DataSource = "LIVE" | "INDEXED" | "CACHED" | "MOCK"
 
@@ -61,6 +63,11 @@ export default function WalletInvestigationPage() {
   const [error, setError] = React.useState<string | null>(null)
   const [watchMsg, setWatchMsg] = React.useState<string | null>(null)
 
+  const [traceGraph, setTraceGraph] = React.useState<TraceGraph | null>(null)
+  const [traceHops, setTraceHops] = React.useState(2)
+  const [traceLoading, setTraceLoading] = React.useState(false)
+  const [traceError, setTraceError] = React.useState<string | null>(null)
+
   async function lookup(e: React.FormEvent) {
     e.preventDefault()
     if (!address.trim()) return
@@ -68,6 +75,8 @@ export default function WalletInvestigationPage() {
     setError(null)
     setData(null)
     setWatchMsg(null)
+    setTraceGraph(null)
+    setTraceError(null)
     try {
       const qs = chain ? `?chain=${chain}` : ""
       const res = await fetch(`/api/wallet/${encodeURIComponent(address.trim())}${qs}`, { credentials: "include" })
@@ -78,6 +87,26 @@ export default function WalletInvestigationPage() {
       setError(e instanceof Error ? e.message : "Lookup failed.")
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function runTrace() {
+    if (!data) return
+    setTraceLoading(true)
+    setTraceError(null)
+    setTraceGraph(null)
+    try {
+      const qs = new URLSearchParams({ chain: data.metadata.chain, maxHops: String(traceHops) })
+      const res = await fetch(`/api/wallet/${encodeURIComponent(data.metadata.address)}/trace?${qs}`, {
+        credentials: "include",
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json?.error || "Fund trace failed.")
+      setTraceGraph(json.graph as TraceGraph)
+    } catch (e) {
+      setTraceError(e instanceof Error ? e.message : "Fund trace failed.")
+    } finally {
+      setTraceLoading(false)
     }
   }
 
@@ -236,6 +265,44 @@ export default function WalletInvestigationPage() {
             </CardHeader>
             <CardContent>
               <TokenTransfersTable transfers={data.tokenTransfers} root={data.metadata.address} />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <CardTitle className="flex items-center gap-2">
+                  <GitBranch className="size-4 text-muted-foreground" />
+                  Fund flow tracing
+                </CardTitle>
+                <div className="flex items-center gap-2">
+                  <Select
+                    className="w-32"
+                    value={String(traceHops)}
+                    onChange={(e) => setTraceHops(Number(e.target.value))}
+                  >
+                    <option value="1">1 hop</option>
+                    <option value="2">2 hops</option>
+                    <option value="3">3 hops</option>
+                  </Select>
+                  <Button size="sm" variant="outline" onClick={runTrace} disabled={traceLoading}>
+                    {traceLoading ? <Spinner /> : <GitBranch className="size-3.5" />} Trace funds
+                  </Button>
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Follows this wallet&apos;s outbound and inbound transfers across counterparties, up to 3 hops. Click a
+                wallet or a connecting line for details.
+              </p>
+            </CardHeader>
+            <CardContent>
+              {traceError ? <ErrorState message={traceError} /> : null}
+              {!traceGraph && !traceLoading && !traceError ? (
+                <p className="py-6 text-center text-xs text-muted-foreground">
+                  Run a trace to map how funds move to and from this wallet.
+                </p>
+              ) : null}
+              {traceGraph ? <FundFlowGraph graph={traceGraph} /> : null}
             </CardContent>
           </Card>
         </div>
